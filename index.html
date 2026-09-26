@@ -430,7 +430,7 @@
     }
 
     /* Markdown 樣式 */
-    .ai-markdown h3 {
+    /* .ai-markdown h3 {
       color: var(--accent-brown);
       margin: 14px 0 6px 0;
       font-size: 1.1rem;
@@ -447,6 +447,65 @@
       padding-left: 10px;
       color: var(--text-muted);
       margin: 10px 0;
+    } */
+    /* Markdown 排版與階層優化 */
+    .ai-markdown h3 {
+      color: var(--accent-brown);
+      margin: 20px 0 10px 0;
+      font-size: 1.18rem;
+      border-bottom: 1.5px solid var(--border-color);
+      padding-bottom: 5px;
+      font-weight: 700;
+    }
+    .ai-markdown h3:first-child { margin-top: 0; }
+    
+    /* 支援四級子標題 #### */
+    .ai-markdown h4 {
+      color: var(--accent-terracotta);
+      font-size: 1.05rem;
+      margin: 16px 0 8px 0;
+      font-weight: 600;
+    }
+
+    .ai-markdown p { 
+      margin-bottom: 10px; 
+      line-height: 1.75; 
+    }
+    .ai-markdown strong { 
+      color: var(--accent-terracotta); 
+      font-weight: 600; 
+    }
+    
+    /* 分隔線美化 */
+    .ai-markdown hr.ai-divider {
+      border: none;
+      border-top: 1px dashed var(--border-color);
+      margin: 18px 0;
+    }
+
+    /* 條列式清單與子項目對齊 */
+    .ai-markdown ul, .ai-markdown ol { 
+      margin: 8px 0 14px 22px; 
+      padding: 0;
+    }
+    .ai-markdown li { 
+      margin-bottom: 6px; 
+      line-height: 1.7;
+    }
+    .ai-markdown li.ai-sub-item {
+      margin-left: 18px;
+      list-style-type: circle;
+    }
+    
+    .ai-markdown blockquote {
+      border-left: 4px solid var(--accent-blue);
+      background: rgba(58, 118, 168, 0.06);
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      color: var(--text-main);
+      margin: 14px 0;
+      font-size: 0.94rem;
+      line-height: 1.6;
     }
 
     .cursor-blink {
@@ -1074,19 +1133,153 @@ function exportJSON() {
   URL.revokeObjectURL(url);
 }
 
+// function parseMarkdown(md) {
+//   let html = md
+//     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+//     .replace(/^## (.*$)/gim, '<h3>$1</h3>')
+//     .replace(/^# (.*$)/gim, '<h3>$1</h3>')
+//     .replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>')
+//     .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+//     .replace(/\*(.*?)\*/gim, '<em>$1</em>')
+//     .replace(/^\- (.*$)/gim, '<li>$1</li>');
+//   html = html.replace(/(<li>.*<\/li>)/gims, '<ul>$1</ul>');
+//   html = html.replace(/\n\n/g, '<p></p>');
+//   return html;
+// }
+
 function parseMarkdown(md) {
-  let html = md
-    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gim, '<h3>$1</h3>')
-    .replace(/^# (.*$)/gim, '<h3>$1</h3>')
-    .replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>')
-    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-    .replace(/^\- (.*$)/gim, '<li>$1</li>');
-  html = html.replace(/(<li>.*<\/li>)/gims, '<ul>$1</ul>');
-  html = html.replace(/\n\n/g, '<p></p>');
-  return html;
+  if (!md) return "";
+
+  // 1. 處理行內粗體與斜體
+  let text = md
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+  const lines = text.split('\n');
+  let html = [];
+  let inList = false;
+  let listType = null; // 'ul' 或 'ol'
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trimEnd();
+    const trimmed = line.trim();
+
+    // 處理空行
+    if (!trimmed) {
+      if (inList) {
+        html.push(listType === 'ul' ? '</ul>' : '</ol>');
+        inList = false;
+        listType = null;
+      }
+      continue;
+    }
+
+    // 分隔線 ---
+    if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      html.push('<hr class="ai-divider" />');
+      continue;
+    }
+
+    // 支援 #### 四級標題
+    if (/^####\s+(.*)/.test(trimmed)) {
+      if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      html.push(`<h4>${trimmed.replace(/^####\s+/, '')}</h4>`);
+      continue;
+    }
+
+    // 支援 ### 三級標題
+    if (/^###\s+(.*)/.test(trimmed)) {
+      if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      html.push(`<h3>${trimmed.replace(/^###\s+/, '')}</h3>`);
+      continue;
+    }
+
+    // 支援 # 或 ## 大標題
+    if (/^##?\s+(.*)/.test(trimmed)) {
+      if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      html.push(`<h3>${trimmed.replace(/^##?\s+/, '')}</h3>`);
+      continue;
+    }
+
+    // 引用區塊
+    if (/^>\s?(.*)/.test(trimmed)) {
+      if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      html.push(`<blockquote>${trimmed.replace(/^>\s?/, '')}</blockquote>`);
+      continue;
+    }
+
+    // 無序清單（支援多層級縮排，如 "  -"）
+    const ulMatch = line.match(/^(\s*)[-*•]\s+(.*)/);
+    if (ulMatch) {
+      const indent = ulMatch[1].length;
+      const content = ulMatch[2];
+      if (!inList || listType !== 'ul') {
+        if (inList) html.push(listType === 'ul' ? '</ul>' : '</ol>');
+        html.push('<ul>');
+        inList = true;
+        listType = 'ul';
+      }
+      const subClass = indent >= 2 ? ' class="ai-sub-item"' : '';
+      html.push(`<li${subClass}>${content}</li>`);
+      continue;
+    }
+
+    // 有序清單（如 1. 2.）
+    const olMatch = line.match(/^(\s*)\d+\.\s+(.*)/);
+    if (olMatch) {
+      const content = olMatch[2];
+      if (!inList || listType !== 'ol') {
+        if (inList) html.push(listType === 'ul' ? '</ul>' : '</ol>');
+        html.push('<ol>');
+        inList = true;
+        listType = 'ol';
+      }
+      html.push(`<li>${content}</li>`);
+      continue;
+    }
+
+    // 一般文字段落
+    if (inList) {
+      html.push(listType === 'ul' ? '</ul>' : '</ol>');
+      inList = false;
+      listType = null;
+    }
+    html.push(`<p>${trimmed}</p>`);
+  }
+
+  if (inList) {
+    html.push(listType === 'ul' ? '</ul>' : '</ol>');
+  }
+
+  return html.join('\n');
 }
+
+// function constructAIPrompt(chart, topic) {
+//   const mingP = chart.palaces[chart.posMing];
+//   const shenP = chart.palaces[chart.posShen];
+//   const guanLuP = chart.palaces[(chart.posMing + 8) % 12];
+//   const caiBoP = chart.palaces[(chart.posMing + 4) % 12];
+//   const qianYiP = chart.palaces[(chart.posMing + 6) % 12];
+//   const sihuaSummary = Object.entries(chart.meta.sihua).map(([star, hua]) => `${star}化${hua}`).join("、");
+
+//   return `
+// 你是一位精通三合派與四化飛星體系的紫微斗數大師。請根據以下命盤結構進行深入且具實踐策略的解讀。
+// 【命盤結構】
+// - 造化：${chart.meta.gender} (${chart.meta.yearStem}${chart.meta.yearBranch}年)
+// - 五行局：${chart.meta.bureau}
+// - 命主：${chart.meta.lifeLord} ｜ 身主：${chart.meta.bodyLord}
+// - 生年四化：${sihuaSummary}
+// 【三方四正核心星曜】
+// 1. 命宮 (${mingP.stem}${mingP.branch})：主星 [${mingP.majorStars.join("、") || "無主星"}]，吉曜 [${mingP.minorStars.join("、")}]，煞星 [${mingP.shaStars.join("、")}]
+// 2. 遷移宮 (${qianYiP.stem}${qianYiP.branch})：主星 [${qianYiP.majorStars.join("、") || "無主星"}]
+// 3. 官祿宮 (${guanLuP.stem}${guanLuP.branch})：主星 [${guanLuP.majorStars.join("、") || "無主星"}]
+// 4. 財帛宮 (${caiBoP.stem}${caiBoP.branch})：主星 [${caiBoP.majorStars.join("、") || "無主星"}]
+// 5. 身宮 (${shenP.name} - ${shenP.stem}${shenP.branch})：主星 [${shenP.majorStars.join("、")}]
+// 【論命主題】：${topic}
+// 請條理分明、直指核心，給予具體人生建議。
+// `.trim();
+// }
 
 function constructAIPrompt(chart, topic) {
   const mingP = chart.palaces[chart.posMing];
@@ -1097,20 +1290,27 @@ function constructAIPrompt(chart, topic) {
   const sihuaSummary = Object.entries(chart.meta.sihua).map(([star, hua]) => `${star}化${hua}`).join("、");
 
   return `
-你是一位精通三合派與四化飛星體系的紫微斗數大師。請根據以下命盤結構進行深入且具實踐策略的解讀。
+你是一位精通三合派與四化飛星體系的紫微斗數大師。請保持原有專業、深刻且具實踐策略的解盤風格。
+
 【命盤結構】
 - 造化：${chart.meta.gender} (${chart.meta.yearStem}${chart.meta.yearBranch}年)
 - 五行局：${chart.meta.bureau}
 - 命主：${chart.meta.lifeLord} ｜ 身主：${chart.meta.bodyLord}
 - 生年四化：${sihuaSummary}
+
 【三方四正核心星曜】
 1. 命宮 (${mingP.stem}${mingP.branch})：主星 [${mingP.majorStars.join("、") || "無主星"}]，吉曜 [${mingP.minorStars.join("、")}]，煞星 [${mingP.shaStars.join("、")}]
 2. 遷移宮 (${qianYiP.stem}${qianYiP.branch})：主星 [${qianYiP.majorStars.join("、") || "無主星"}]
 3. 官祿宮 (${guanLuP.stem}${guanLuP.branch})：主星 [${guanLuP.majorStars.join("、") || "無主星"}]
 4. 財帛宮 (${caiBoP.stem}${caiBoP.branch})：主星 [${caiBoP.majorStars.join("、") || "無主星"}]
 5. 身宮 (${shenP.name} - ${shenP.stem}${shenP.branch})：主星 [${shenP.majorStars.join("、")}]
+
 【論命主題】：${topic}
-請條理分明、直指核心，給予具體人生建議。
+
+【排版與輸出規範】
+1. 每個重點、宮位解析與條列項目「必須單獨換行」，切勿將多個重點以破折號連接在同一行。
+2. 大章節請使用 ###，次級子章節請使用 ####，重點條列請使用 - 或 1. 2.。
+3. 請務必完整輸出全部章節與結論，結構收尾完整，嚴禁篇末中斷。
 `.trim();
 }
 
@@ -1202,7 +1402,7 @@ async function callGeminiAPI(apiKey, prompt) {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.65,
-            maxOutputTokens: 3500
+            maxOutputTokens: 8192 // maximum tokens 輸出上限
           }
         })
       });
