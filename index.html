@@ -1181,70 +1181,50 @@ function streamTextToOutput(container, markdownText) {
 // }
 
 // 自動探測並呼叫當前 API Key 真正支援的 Gemini 模型
+// 呼叫 Google Gemini API (對接最新 gemini-3.8-flash)
 async function callGeminiAPI(apiKey, prompt) {
-  // 步驟 1：向 Google 查詢該 API Key 當前有權限調用的完整模型清單
-  const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-  const listResp = await fetch(listUrl);
+  // 依據 Google 官方最新要求，優先調用 gemini-3.8-flash
+  const candidates = [
+    { model: "gemini-3.8-flash", apiVersion: "v1beta" },
+    { model: "gemini-3.8-flash", apiVersion: "v1" },
+    { model: "gemini-3.8-flash-lite", apiVersion: "v1beta" }
+  ];
 
-  if (!listResp.ok) {
-    const err = await listResp.json().catch(() => ({}));
-    const rawMsg = err.error?.message || `HTTP ${listResp.status}`;
-    
-    // 常見帳號權限錯誤精確提示
-    if (rawMsg.includes("API key not valid")) {
-      throw new Error("API Key 無效，請檢查是否複製完整（前後不可有空白）。");
-    }
-    if (rawMsg.includes("has not been used in project") || rawMsg.includes("disabled")) {
-      throw new Error("你的 Google 專案尚未啟用『Generative Language API』，請在 Google AI Studio 建立全新專案與 Key。");
-    }
-    throw new Error(`無法取得可用模型清單 (${rawMsg})`);
-  }
+  let lastErrorMsg = "";
 
-  const listData = await listResp.json();
-  const models = listData.models || [];
+  for (const item of candidates) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/${item.apiVersion}/models/${item.model}:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.65,
+            maxOutputTokens: 3500
+          }
+        })
+      });
 
-  // 步驟 2：過濾出支援 generateContent（文字生成）的模型
-  const usableModels = models
-    .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent"))
-    .map(m => m.name.replace(/^models\//, ""));
-
-  if (usableModels.length === 0) {
-    throw new Error("此 API Key 目前沒有任何支援文字生成的模型權限，請改用一般個人 @gmail.com 帳號建立金鑰。");
-  }
-
-  // 步驟 3：智慧優先排序 (2.0-flash > 1.5-flash > 其它可用模型)
-  let targetModel = usableModels.find(m => m.includes("2.0-flash")) ||
-                    usableModels.find(m => m.includes("1.5-flash")) ||
-                    usableModels[0];
-
-  console.log(`[Gemini API] 探測成功，可用模型清單:`, usableModels, `本次選用: ${targetModel}`);
-
-  // 步驟 4：發送排盤解析請求
-  const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-  const response = await fetch(genUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.65,
-        maxOutputTokens: 3000
+      if (response.ok) {
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
+        if (candidate?.finishReason === "SAFETY") {
+          throw new Error("解盤內容觸發安全過濾機制，請切換主題後重試。");
+        }
+        console.log(`[Gemini API] 成功透過 ${item.apiVersion} 調用 ${item.model}`);
+        return candidate.content.parts[0].text;
+      } else {
+        const errJson = await response.json().catch(() => ({}));
+        lastErrorMsg = errJson.error?.message || `HTTP ${response.status}`;
       }
-    })
-  });
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `模型 ${targetModel} 調用失敗 (${response.status})`);
+    } catch (e) {
+      lastErrorMsg = e.message;
+    }
   }
 
-  const data = await response.json();
-  const candidate = data.candidates?.[0];
-  if (candidate?.finishReason === "SAFETY") {
-    throw new Error("生成內容觸發安全審核，已被阻擋。");
-  }
-
-  return candidate.content.parts[0].text;
+  throw new Error(`調用失敗：${lastErrorMsg}`);
 }
 
 async function callOpenAICompatibleAPI(endpoint, apiKey, prompt) {
