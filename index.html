@@ -1427,76 +1427,91 @@ function streamTextToOutput(container, markdownText) {
 //   throw new Error(`調用失敗：${lastErrorMsg}`);
 // }
 
-// 呼叫 Google Gemini API (動態探測帳號可用模型，徹底杜絕 404 報錯)
+// 呼叫 Google Gemini API (優先鎖定 3.8-flash、黑名單過濾與自動輪替容錯)
 async function callGeminiAPI(apiKey, prompt) {
-  // 步驟 1：向 Google 查詢該 API Key 當前真正有權限存取的模型清單
+  // 步驟 1：向 Google 查詢該 API Key 當前擁有的所有模型
   const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-  const listResp = await fetch(listUrl);
-
-  if (!listResp.ok) {
-    const err = await listResp.json().catch(() => ({}));
-    const rawMsg = err.error?.message || `HTTP ${listResp.status}`;
-    if (rawMsg.includes("API key not valid")) {
-      throw new Error("API Key 無效或已過期，請至 Google AI Studio 重新生成。");
+  let detectedModels = [];
+  try {
+    const listResp = await fetch(listUrl);
+    if (listResp.ok) {
+      const listData = await listResp.json();
+      detectedModels = (listData.models || [])
+        .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent"))
+        .map(m => m.name.replace(/^models\//, ""));
     }
-    if (rawMsg.includes("quota") || rawMsg.includes("Quota")) {
-      throw new Error("API 呼叫額度已滿或太頻繁，請稍候重試。");
-    }
-    throw new Error(`無法向 Google 取得可用模型清單：${rawMsg}`);
+  } catch (e) {
+    console.warn("[Gemini API] 查詢清單略過，直接採用預設推薦順序", e);
   }
 
-  const listData = await listResp.json();
-  const models = listData.models || [];
-
-  // 步驟 2：過濾出支援 generateContent 且為對話生成的模型（排除 embedding 等無關模型）
-  const textModels = models.filter(m => 
-    m.supportedGenerationMethods && 
-    m.supportedGenerationMethods.includes("generateContent") &&
-    !m.name.includes("embedding") &&
-    !m.name.includes("aqa")
+  // 步驟 2：黑名單過濾（排除 Google 官方明確提示新用戶無法使用的過渡模型）
+  const blacklist = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash-002"];
+  const availableFiltered = detectedModels.filter(m => 
+    !blacklist.includes(m) && 
+    !m.includes("embedding") && 
+    !m.includes("aqa")
   );
 
-  if (textModels.length === 0) {
-    throw new Error("此 API Key 目前沒有任何文字生成模型的調用權限，請確認 Google AI Studio 帳號狀態。");
-  }
+  // 步驟 3：依 Google 官方建議設定優先候選順序（以 3.8-flash 為第一順位）
+  const priorityList = [
+    "gemini-3.8-flash",
+    "gemini-3.8-flash-lite"
+  ];
 
-  const modelNames = textModels.map(m => m.name.replace(/^models\//, ""));
-  console.log("[Gemini API] 帳號目前開放調用的所有模型：", modelNames);
-
-  // 步驟 3：智慧優先排序（優先取 flash 最新版，其次取 pro，最後取預設）
-  let targetModel = modelNames.find(n => n.includes("flash") && !n.includes("8b")) ||
-                    modelNames.find(n => n.includes("flash")) ||
-                    modelNames.find(n => n.includes("pro")) ||
-                    modelNames[0];
-
-  console.log(`[Gemini API] 本次推演自動匹配選用最佳模型：${targetModel}`);
-
-  // 步驟 4：發送排盤深度解析請求
-  const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-  const response = await fetch(genUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.65,
-        maxOutputTokens: 8192 // 確保長篇解盤完整輸出
-      }
-    })
+  // 將帳號探測到且未在黑名單的其他模型依序補在後方做為備援
+  availableFiltered.forEach(m => {
+    if (!priorityList.includes(m) && m.includes("flash")) priorityList.push(m);
+  });
+  availableFiltered.forEach(m => {
+    if (!priorityList.includes(m)) priorityList.push(m);
   });
 
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `模型 ${targetModel} 調用失敗 (${response.status})`);
+  console.log("[Gemini API] 本次嘗試模型優先順序：", priorityList);
+
+  let lastErrorMsg = "";
+
+  // 步驟 4：自動輪替調用，若遇到特定模型報錯則自動嘗試下一個
+  for (const targetModel of priorityList) {
+    try {
+      console.log(`[Gemini API] 正在調用模型：${targetModel}`);
+      const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+      const response = await fetch(genUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.65,
+            maxOutputTokens: 8192 // 確保論命全文完整輸出
+          }
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
+        if (candidate?.finishReason === "SAFETY") {
+          throw new Error("解盤內容觸發安全審核機制，已被阻擋。");
+        }
+        console.log(`[Gemini API] 成功透過 ${targetModel} 完成排盤推演！`);
+        return candidate.content.parts[0].text;
+      } else {
+        const errJson = await response.json().catch(() => ({}));
+        lastErrorMsg = errJson.error?.message || `HTTP ${response.status}`;
+        console.warn(`[Gemini API] 模型 ${targetModel} 回傳：${lastErrorMsg}，自動切換下一模型...`);
+
+        // 若為 API Key 本身無效，則中斷輪替直接報錯
+        if (lastErrorMsg.includes("API key not valid")) {
+          throw new Error("API Key 無效，請檢查前後是否有空格。");
+        }
+      }
+    } catch (err) {
+      lastErrorMsg = err.message;
+      if (lastErrorMsg.includes("API Key 無效")) throw err;
+    }
   }
 
-  const data = await response.json();
-  const candidate = data.candidates?.[0];
-  if (candidate?.finishReason === "SAFETY") {
-    throw new Error("解盤內容觸發安全審核機制，已被阻擋。");
-  }
-
-  return candidate.content.parts[0].text;
+  throw new Error(`調用失敗：${lastErrorMsg}`);
 }
 
 async function callOpenAICompatibleAPI(endpoint, apiKey, prompt) {
